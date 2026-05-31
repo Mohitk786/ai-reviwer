@@ -1,27 +1,3 @@
-// =============================================================================
-// RAG → AI Code Reviewer — Prisma schema
-//
-// Models the GitHub object graph faithfully (PR / Issue / Comment / Commit / Reference)
-// alongside identity, subscription, feature flag, provider credential, and
-// AI review tables.
-//
-// Design principles:
-//   1. Faithful to GitHub's object graph — do NOT pre-collapse into a generic
-//      `documents` table. Review context queries need the structure.
-//   2. AiReview is pinned to a `commitSha` — one review per commit, immutable
-//      after posting. Re-review on push = new AiReview row.
-//   3. AiReviewComment stores actual file line numbers (not GitHub diff positions);
-//      conversion to GitHub API `position`/`line` happens at post time.
-//   4. ReviewConfiguration supports per-installation defaults (repositoryId = NULL)
-//      and per-repository overrides. Uniqueness of the NULL case is enforced at the
-//      service layer (Postgres UNIQUE allows multiple NULLs; partial index not
-//      required for MVP scale).
-//   5. Chunk/ChunkEmbedding/Query tables retained in schema for backward-compatible
-//      migration; will be dropped in a separate destructive migration after code is
-//      fully removed.
-//
-// References: see ./README.md for design rationale.
-// =============================================================================
 
 generator client {
   provider        = "prisma-client-js"
@@ -36,9 +12,6 @@ datasource db {
   extensions = [pgvector(map: "vector")]
 }
 
-// -----------------------------------------------------------------------------
-// Identity & access
-// -----------------------------------------------------------------------------
 
 /// A GitHub user who has logged into our app.
 model User {
@@ -56,7 +29,6 @@ model User {
 }
 
 /// A GitHub App installation — represents an org or user that has authorized our app.
-/// Per-installation rate limits and webhooks are scoped here.
 model Installation {
   id            String           @id @default(cuid())
   githubId      Int              @unique
@@ -139,15 +111,6 @@ enum IngestionState {
   PAUSED
 }
 
-// -----------------------------------------------------------------------------
-// Subscriptions, plans, usage meters
-// -----------------------------------------------------------------------------
-//
-// Subscription tracking is ALWAYS active. Enforcement (rate-limit / paywall) is
-// gated by the `billing.enforcement` feature flag — flipping it activates
-// enforcement within ~5 minutes (FeatureFlag service TTL).
-// -----------------------------------------------------------------------------
-
 /// A subscription tier with optional limits. `null` limits = unlimited.
 model Plan {
   id                  String         @id @default(cuid())
@@ -216,7 +179,6 @@ enum SubscriptionStatus {
 /// DB-backed feature flag. Read with a 5-minute in-process cache (see @repo/flags).
 model FeatureFlag {
   id              String   @id @default(cuid())
-  /// Stable key — e.g., 'billing.enforcement', 'retrieval.rerank'.
   key             String   @unique
   /// Default value if no override matches.
   enabled         Boolean  @default(false)
@@ -245,13 +207,10 @@ model ProviderCredential {
 
   kind                  ProviderCredentialKind
   /// Provider identifier — 'openai', 'anthropic', 'google', etc.
-  /// Validated against the factory's known kinds at write time.
   providerKind          String
 
   /// AES-256-GCM ciphertext of the API key. NEVER plaintext.
-  /// Layout: [keyVersion(1B)] [iv(12B)] [authTag(16B)] [ciphertext(N)]
   encryptedSecret       Bytes
-  /// For future master-key rotation.
   encryptionKeyVersion  Int                       @default(1)
 
   // Non-secret config.
