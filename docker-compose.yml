@@ -1,0 +1,69 @@
+# =============================================================================
+# Production-like local stack — Postgres + web + worker, all from Docker.
+#
+# Usage:
+#   docker compose up --build           # rebuild on changes
+#   docker compose up                   # use cached images
+#   docker compose down                 # stop and remove containers
+#   docker compose down -v              # also wipe DB volume
+#
+# Differences from `docker-compose.dev.yml`:
+#   - That file runs ONLY Postgres so you can `npm run dev` natively (HMR).
+#   - This file runs the full stack via Docker — closest thing to prod locally.
+# =============================================================================
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: rag
+      POSTGRES_PASSWORD: rag
+      POSTGRES_DB: rag
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U rag -d rag']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    ports:
+      # Optional — exposed for direct psql / Prisma Studio access.
+      - '5432:5432'
+
+  web:
+    build:
+      context: .
+      target: web
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://rag:rag@postgres:5432/rag?schema=public
+      NODE_ENV: production
+    ports:
+      - '3000:3000'
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      target: worker
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://rag:rag@postgres:5432/rag?schema=public
+      NODE_ENV: production
+      SERVICE_NAME: worker
+      # Worker boots after migrations have already run on the web container.
+      # If you want to run worker without web, set SKIP_DB_INIT=0.
+      SKIP_DB_INIT: '1'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      web:
+        condition: service_started
+
+volumes:
+  pgdata:

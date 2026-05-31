@@ -1,0 +1,75 @@
+# =============================================================================
+# CI — runs on every PR and pushes to main.
+#
+# Jobs:
+#   1. lint-typecheck — fast feedback. Lint + typecheck the whole monorepo.
+#   2. docker-build   — verifies the production Dockerfile builds successfully.
+#                       Doesn't push; that's a deploy-time concern.
+# =============================================================================
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Cancel in-progress runs on the same branch when a new push lands.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-typecheck:
+    name: Lint + Typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npm --workspace @repo/db run generate
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run check-types
+
+  docker-build:
+    name: Docker build
+    runs-on: ubuntu-latest
+    needs: lint-typecheck
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Build both targets to verify each runtime image is valid.
+      # No push — pushing/deploying is handled by a separate workflow.
+      - name: Build web image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: web
+          push: false
+          tags: rag-web:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build worker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: worker
+          push: false
+          tags: rag-worker:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -E \"\\\\.\\(ts|js\\)$\")",
+      "Bash(npx tsc *)",
+      "WebFetch(domain:groq.com)",
+      "WebFetch(domain:console.groq.com)",
+      "mcp__claude_ai_Notion__notion-create-pages"
+    ]
+  }
+}

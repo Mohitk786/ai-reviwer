@@ -1,0 +1,28 @@
+# =============================================================================
+# Local development — Postgres + pgvector only.
+# Run apps natively (npm run dev) so you get HMR, fast typecheck, etc.
+# Use docker-compose.yml (no suffix) when you want a prod-like full stack.
+# =============================================================================
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: rag-postgres-dev
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: rag
+      POSTGRES_PASSWORD: rag
+      POSTGRES_DB: rag
+    ports:
+      - '5432:5432'
+    volumes:
+      - pgdata-dev:/var/lib/postgresql/data
+    # pg-boss creates a `pgboss` schema; nothing to configure here.
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U rag -d rag']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata-dev:
