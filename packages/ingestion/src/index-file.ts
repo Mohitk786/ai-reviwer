@@ -13,6 +13,7 @@ import type { Logger } from '@repo/observability';
 import { JobNames, jobSchemas } from '@repo/jobs';
 import { isSupportedFile } from '@repo/chunking';
 import { indexSingleFile } from './index-repository.js';
+import { z } from 'zod';
 
 export interface IndexFileDeps {
   prisma: PrismaClient;
@@ -22,8 +23,8 @@ export interface IndexFileDeps {
 }
 
 export function createIndexFileHandler(deps: IndexFileDeps) {
-  return async function handleIndexFile(job: { data: unknown }): Promise<void> {
-    const payload = jobSchemas[JobNames.IndexFile].parse(job.data);
+  return async function handleIndexFile(job: { data: z.infer<typeof jobSchemas[typeof JobNames.IndexFile]> }): Promise<void> {
+    const payload = job.data;
     const { prisma, github, embedding, logger } = deps;
 
     if (!isSupportedFile(payload.filePath)) return;

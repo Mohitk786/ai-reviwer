@@ -1,23 +1,3 @@
-/**
- * Session + CSRF state cookies.
- *
- * Two cookies, both `httpOnly`, signed where they need integrity:
- *
- *   1. `rag_session` (signed)
- *      - Carries `{ userId, exp }`.
- *      - HMAC-SHA-256 over the base64url-encoded payload, using SESSION_SECRET.
- *      - 30-day TTL. Issued post-callback when sign-in completes.
- *
- *   2. `rag_oauth_state` (plaintext, httpOnly)
- *      - Random hex string compared against `?state=` on the callback.
- *      - Plaintext is fine because the cookie is httpOnly — an attacker can't
- *        read it from the browser to fake a matching `?state=` in their CSRF.
- *      - 10-minute TTL — sign-in flow shouldn't take longer than that.
- *
- * Why no `jose` / `iron-session`: this is ~50 lines of Node `crypto` and we
- * already have SESSION_SECRET. Adding a JWT/session library is dependency
- * creep for a problem we already solved.
- */
 
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { cookies } from 'next/headers';
@@ -107,11 +87,7 @@ export async function clearSession(): Promise<void> {
   cookieStore.delete(SESSION_COOKIE);
 }
 
-// -----------------------------------------------------------------------------
-// OAuth state cookie (CSRF)
-// -----------------------------------------------------------------------------
 
-/** Cryptographically-random state string. 32 bytes hex = 64 chars, plenty of entropy. */
 export function generateState(): string {
   return randomBytes(32).toString('hex');
 }

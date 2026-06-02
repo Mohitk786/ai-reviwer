@@ -16,6 +16,7 @@ import type { EmbeddingProvider } from '@repo/embeddings';
 import type { Logger } from '@repo/observability';
 import { JobNames, jobSchemas } from '@repo/jobs';
 import { chunkFile, isSupportedFile } from '@repo/chunking';
+import { z } from 'zod';
 
 export interface IndexRepositoryDeps {
   prisma: PrismaClient;
@@ -24,16 +25,14 @@ export interface IndexRepositoryDeps {
   logger: Logger;
 }
 
-/** Max file size to index. Files larger than this are skipped. */
-const MAX_FILE_BYTES = 150_000;
-/** Max files to index per repo. Prevents runaway indexing on massive monorepos. */
+
+const MAX_FILE_BYTES = 150_000;  //150 Kb
 const MAX_FILES = 500;
-/** Files to fetch and process concurrently within one batch iteration. */
 const BATCH_SIZE = 15;
 
 export function createIndexRepositoryHandler(deps: IndexRepositoryDeps) {
-  return async function handleIndexRepository(job: { data: unknown }): Promise<void> {
-    const payload = jobSchemas[JobNames.IndexRepository].parse(job.data);
+  return async function handleIndexRepository(job: { data: z.infer<typeof jobSchemas[typeof JobNames.IndexRepository]> }): Promise<void> {
+    const payload = job.data;
     const { prisma, github, embedding, logger } = deps;
 
     const log = logger.child({ repositoryId: payload.repositoryId, job: 'index.repository' });
@@ -63,7 +62,7 @@ export function createIndexRepositoryHandler(deps: IndexRepositoryDeps) {
     });
     const headSha = refData.object.sha;
 
-    // Fetch full recursive file tree (GitHub truncates at ~100k entries or 7 MB).
+    // TO HANDLE: LARGE REPOS: Fetch full recursive file tree (GitHub truncates at ~100k files or 7 MB response size).
     const { data: treeData } = await octokit.rest.git.getTree({
       owner: repo.owner,
       repo: repo.name,
@@ -71,6 +70,7 @@ export function createIndexRepositoryHandler(deps: IndexRepositoryDeps) {
       recursive: '1',
     });
 
+    //files to index: filter out non-code files, and files larger than MAX_FILE_BYTES
     const codeFiles = (treeData.tree ?? [])
       .filter((f) => f.type === 'blob' && f.path && isSupportedFile(f.path))
       .filter((f) => (f.size ?? 0) <= MAX_FILE_BYTES)
@@ -140,7 +140,6 @@ export async function indexFileBatch(input: IndexFileBatchInput): Promise<void> 
 export interface IndexSingleFileInput {
   filePath: string;
   ref: string;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   repo: { id: string; owner: string; name: string; installation: { githubId: number } };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   octokit: any;
@@ -152,28 +151,30 @@ export interface IndexSingleFileInput {
 export async function indexSingleFile(input: IndexSingleFileInput): Promise<void> {
   const { filePath, ref, repo, octokit, prisma, embedding, log } = input;
 
+  //fetch the  single file content (actual code) from the github repo
   const { data } = await octokit.rest.repos.getContent({
     owner: repo.owner,
     repo: repo.name,
     path: filePath,
-    ref,
+    ref,  //this helps us fetch the file content from the specific commit
   });
 
-  // getContent returns an array for directories — skip those.
+  // same endpoint directories ke liye bhi kaam karta hai. Agar path ek folder ho to data array aata hai:
+  // because we are working with single file, we will skipt the directory check.
   if (Array.isArray(data) || data.type !== 'file' || !data.content) return;
 
-  // GitHub file content base64 encoded bhejta hai (binary-safe format). Isse normal readable string mein convert karo.
+  // GitHub file content base64 encoded bhejta hai . Isse normal readable string mein convert karo.
   const content = Buffer.from(data.content, 'base64').toString('utf-8');
   const chunks = chunkFile(content, filePath);
   if (chunks.length === 0) return;
 
-  // Embed all chunks in one batch call (OpenAI allows up to 2048 inputs).
+
   const vectors = await embedding.embedBatch(chunks.map((c) => c.content));
 
   const narrativeKey = `file:${repo.id}:${filePath}`;
   const now = new Date();
 
-  // Delete stale chunks for this file before inserting fresh ones (idempotent re-index).
+
   await prisma.chunk.deleteMany({
     where: { repositoryId: repo.id, narrativeKey },
   });
@@ -192,7 +193,7 @@ export async function indexSingleFile(input: IndexSingleFileInput): Promise<void
         narrativeKey,
         ordinal: idx,
         content: chunk.content,
-        contentHash,
+        contentHash,   //future k liye inorder to prevent re-emebed the same chunk
         // Approximate token count: 1 token ≈ 4 chars for code.
         tokens: Math.ceil(chunk.content.length / 4),
         filesTouched: [filePath],

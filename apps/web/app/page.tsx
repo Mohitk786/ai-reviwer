@@ -1,14 +1,3 @@
-/**
- * Landing page.
- *
- * Server component — checks the session cookie:
- *   - Signed in   → redirects to /onboarding.
- *   - Signed out  → renders the marketing card with a wired GitHub sign-in button.
- *
- * URL-level error states are surfaced via `?error=…` (set by the auth callback
- * on failure). Whitelist enforced; any unknown value is shown as 'unknown'.
- */
-
 import { redirect } from 'next/navigation';
 import { getEnv } from '@repo/shared';
 import { getSession } from '@/server/session';

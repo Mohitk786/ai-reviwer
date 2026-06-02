@@ -11,6 +11,7 @@ import { minimatch } from 'minimatch';
 import { createReviewLLMClient } from './llm-client.js';
 import type { FileReviewComment } from './schemas.js';
 import { searchSimilarCode } from './code-search.js';
+import { z } from 'zod';
 
 export interface ReviewPrDeps {
   prisma: PrismaClient;
@@ -24,8 +25,8 @@ export interface ReviewPrDeps {
 export function createReviewPrHandler(deps: ReviewPrDeps) {
   const { prisma, github, logger, llm, embedding } = deps;
 
-  return async function handleReviewPr(job: { data: unknown }): Promise<void> {
-    const payload = jobSchemas[JobNames.ReviewPr].parse(job.data);
+  return async function handleReviewPr(job: { data: z.infer<typeof jobSchemas[typeof JobNames.ReviewPr]> }): Promise<void> {
+    const payload = job.data;
     const log = logger.child({
       aiReviewId: payload.aiReviewId,
       prNumber: payload.pullRequestNumber,

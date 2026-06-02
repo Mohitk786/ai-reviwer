@@ -1,9 +1,4 @@
 /**
- * AST-based code chunker using Tree-sitter.
- *
- * Chunks at function/class/method boundaries — never by character count.
- * Falls back to whole-file chunking for unsupported languages.
- *
  * Tree-sitter is a native CJS module. Imported via createRequire so this ESM
  * package can load it without transpiling it.
  */
@@ -36,14 +31,13 @@ const CHUNK_TYPES: Record<string, string[]> = {
   ],
 };
 
-// Cache parsers per language — creating a Parser per file is expensive.
-const parserCache = new Map<string, any>();
 
+const parserCache = new Map<string, any>();
 function getParser(language: string): any | null {
   if (parserCache.has(language)) return parserCache.get(language);
 
   try {
-   
+
     const Parser = require('tree-sitter') as any;
     const parser = new Parser();
 
@@ -72,7 +66,6 @@ function getParser(language: string): any | null {
 }
 
 function extractName(node: any): string | null {
-  // tree-sitter field names for the identifier differ by node type.
   const nameNode =
     node.childForFieldName?.('name') ??
     node.childForFieldName?.('identifier');
@@ -83,11 +76,10 @@ function extractName(node: any): string | null {
  * Walk the AST, calling callback on each node whose type is in targetTypes.
  * Does NOT recurse into matched nodes (avoids double-counting nested functions).
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function walkTree(node: any, targetTypes: Set<string>, callback: (n: any) => void): void {
   if (targetTypes.has(node.type as string)) {
     callback(node);
-    return; // don't descend into matched node
+    return; 
   }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   for (const child of node.children as any[]) {
@@ -95,10 +87,7 @@ function walkTree(node: any, targetTypes: Set<string>, callback: (n: any) => voi
   }
 }
 
-/**
- * Chunk a source file into AST-level units (functions, classes, methods).
- * Returns an empty array for unsupported file types.
- */
+
 export function chunkFile(content: string, filePath: string): CodeChunk[] {
   const language = detectLanguage(filePath);
   if (!language) return [];
@@ -115,6 +104,13 @@ export function chunkFile(content: string, filePath: string): CodeChunk[] {
   const sourceLines = content.split('\n');
   const chunks: CodeChunk[] = [];
 
+
+  /**
+    * TO understand: har function, class, variable ek "node" hota hai tree mein.
+    * tree.rootNode : Poori file ka starting point — ek root node jiske andar saari nested nodes hain:
+    * targetTypes : ye hai jo types of nodes ham chahte hai chunk karne ke liye.
+    * so we are only chunking the classes, functions, methods.
+    */
   walkTree(tree.rootNode, new Set(targetTypes), (node) => {
     const startLine = (node.startPosition.row as number) + 1;
     const endLine = (node.endPosition.row as number) + 1;
@@ -137,7 +133,6 @@ export function chunkFile(content: string, filePath: string): CodeChunk[] {
   });
 
   if (chunks.length === 0) {
-    // File has no named functions/classes (e.g., pure config, barrel re-exports).
     return [wholeFileChunk(content, filePath, language)];
   }
 

@@ -47,3 +47,18 @@ export class VoyageEmbeddingProvider implements EmbeddingProvider {
       .map((d) => d.embedding);
   }
 }
+
+// [
+//   {
+//     index: 1,
+//     embedding: [0.1, 0.2, 0.3]
+//   },  
+//   {
+//     index: 0,
+//     embedding: [0.4, 0.5, 0.6]
+//   },
+//   {
+//     index: 2,
+//     embedding: [0.4, 0.5, 0.6]
+//   }
+// ]
