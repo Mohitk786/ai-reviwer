@@ -36,6 +36,12 @@ export function createProcessWebhookHandler(deps: ProcessWebhookDeps) {
       case 'push':
         await handlePushEvent(delivery.payload, { prisma, boss, log });
         break;
+      case 'pull_request_review_comment':
+        await handlePrReviewCommentEvent(delivery.payload, { prisma, boss, log });
+        break;
+      case 'issue_comment':
+        await handleIssueCommentEvent(delivery.payload, { prisma, boss, log });
+        break;
       case 'installation':
         await handleInstallationEvent(delivery.payload, { prisma, log });
         break;
@@ -331,4 +337,121 @@ async function handlePushEvent(
       ref: headSha,
     });
   }
+}
+
+// ---------------------------------------------------------------------------
+// pull_request_review_comment — developer comments on a diff line
+// ---------------------------------------------------------------------------
+
+const prReviewCommentPayloadSchema = z.object({
+  action: z.string(),
+  comment: z.object({
+    id: z.number().int(),
+    body: z.string(),
+    path: z.string().optional(),
+    line: z.number().int().optional(),
+    in_reply_to_id: z.number().int().optional(),
+    html_url: z.string().optional(),
+    user: z.object({ login: z.string() }),
+  }),
+  pull_request: z.object({ number: z.number().int().positive() }),
+  repository: z.object({ id: z.number().int() }),
+  installation: z.object({ id: z.number().int() }).optional(),
+}).passthrough();
+
+async function handlePrReviewCommentEvent(
+  payload: unknown,
+  ctx: { prisma: PrismaClient; boss: Boss; log: Logger },
+): Promise<void> {
+  const { prisma, boss, log } = ctx;
+
+  const parsed = prReviewCommentPayloadSchema.safeParse(payload);
+  if (!parsed.success) {
+    log.warn({ issues: parsed.error.issues }, 'pull_request_review_comment payload malformed — skipping');
+    return;
+  }
+
+  const { action, comment, pull_request: pr, repository } = parsed.data;
+
+  // Only process newly created comments, not edits or deletions.
+  if (action !== 'created') return;
+
+  // Skip comments from our own bot to avoid infinite loops.
+  if (comment.user.login.includes('[bot]')) return;
+
+  const repo = await prisma.repository.findFirst({
+    where: { githubId: repository.id },
+  });
+  if (!repo?.enabled) return;
+
+  await boss.send(JobNames.ProcessDeveloperComment, {
+    repositoryId: repo.id,
+    installationId: repo.installationId,
+    pullRequestNumber: pr.number,
+    githubCommentId: comment.id,
+    commentBody: comment.body,
+    commenterLogin: comment.user.login,
+    filePath: comment.path,
+    line: comment.line,
+    inReplyToCommentId: comment.in_reply_to_id,
+    commentUrl: comment.html_url,
+  });
+
+  log.info({ prNumber: pr.number, githubCommentId: comment.id }, 'ProcessDeveloperComment enqueued');
+}
+
+// ---------------------------------------------------------------------------
+// issue_comment — developer comments on the PR thread (top-level)
+// ---------------------------------------------------------------------------
+
+const issueCommentPayloadSchema = z.object({
+  action: z.string(),
+  comment: z.object({
+    id: z.number().int(),
+    body: z.string(),
+    html_url: z.string().optional(),
+    user: z.object({ login: z.string() }),
+  }),
+  issue: z.object({
+    number: z.number().int().positive(),
+    pull_request: z.object({}).optional(), // present only when issue is a PR
+  }),
+  repository: z.object({ id: z.number().int() }),
+  installation: z.object({ id: z.number().int() }).optional(),
+}).passthrough();
+
+async function handleIssueCommentEvent(
+  payload: unknown,
+  ctx: { prisma: PrismaClient; boss: Boss; log: Logger },
+): Promise<void> {
+  const { prisma, boss, log } = ctx;
+
+  const parsed = issueCommentPayloadSchema.safeParse(payload);
+  if (!parsed.success) return;
+
+  const { action, comment, issue, repository } = parsed.data;
+
+  // Only process new comments on PRs (not plain issues), not edits.
+  if (action !== 'created') return;
+  if (!issue.pull_request) return;
+  if (comment.user.login.includes('[bot]')) return;
+
+  const repo = await prisma.repository.findFirst({
+    where: { githubId: repository.id },
+  });
+  if (!repo?.enabled) return;
+
+  // Issue comments are not inline — no filePath/line/inReplyToCommentId.
+  // We still process them for knowledge extraction.
+  await boss.send(JobNames.ProcessDeveloperComment, {
+    repositoryId: repo.id,
+    installationId: repo.installationId,
+    pullRequestNumber: issue.number,
+    githubCommentId: comment.id,
+    commentBody: comment.body,
+    commenterLogin: comment.user.login,
+    commentUrl: comment.html_url,
+  });
+
+  log.info({ prNumber: issue.number, githubCommentId: comment.id }, 'ProcessDeveloperComment (issue_comment) enqueued');
 }

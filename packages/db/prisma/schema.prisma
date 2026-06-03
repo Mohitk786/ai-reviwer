@@ -74,27 +74,27 @@ enum InstallationRole {
   MEMBER
 }
 
-/// A repository the user has opted-in to ingest.
+/// A repository  that user has allowed to be ingested.
 model Repository {
   id              String           @id @default(cuid())
   installationId  String
   installation    Installation     @relation(fields: [installationId], references: [id], onDelete: Cascade)
-  githubId        Int              @unique
+  githubId        Int              @unique    //github repository id
   owner           String
   name            String
   defaultBranch   String
-  // User must explicitly enable a repo before ingestion starts.
   enabled         Boolean          @default(false)
   ingestionState  IngestionState   @default(NOT_STARTED)
-  // High-water mark for incremental syncs — only fetch updates after this timestamp.
-  ingestedThrough DateTime?
   createdAt       DateTime         @default(now())
   updatedAt       DateTime         @updatedAt
 
-  pullRequests    PullRequest[]
-  chunks          Chunk[]
-  aiReviews       AiReview[]
-  reviewConfigs   ReviewConfiguration[]
+  pullRequests      PullRequest[]
+  chunks            Chunk[]
+  aiReviews         AiReview[]
+  reviewConfigs     ReviewConfiguration[]
+  reviewMemories    ReviewMemory[]
+  repoKnowledge     RepoKnowledge[]
+  reviewConversations ReviewConversation[]
 
   @@unique([owner, name])
   @@index([installationId, enabled])
@@ -111,7 +111,7 @@ enum IngestionState {
   PAUSED
 }
 
-/// A subscription tier with optional limits. `null` limits = unlimited.
+// A subscription tier with optional limits. `null` limits = unlimited.
 model Plan {
   id                  String         @id @default(cuid())
   slug                String         @unique
@@ -171,16 +171,10 @@ enum SubscriptionStatus {
   PAUSED
 }
 
-
-// -----------------------------------------------------------------------------
-// Feature flags
-// -----------------------------------------------------------------------------
-
-/// DB-backed feature flag. Read with a 5-minute in-process cache (see @repo/flags).
+/// DB-backed feature flag. see @repo/flags.
 model FeatureFlag {
   id              String   @id @default(cuid())
   key             String   @unique
-  /// Default value if no override matches.
   enabled         Boolean  @default(false)
   /// 0–100. When set, deterministic hash of `installationId` decides per-install.
   rolloutPercent  Int?
@@ -196,10 +190,6 @@ model FeatureFlag {
 // -----------------------------------------------------------------------------
 // Provider credentials (BYO-LLM)
 // -----------------------------------------------------------------------------
-
-/// A user-supplied API credential for an external provider.
-/// Secrets stored encrypted via @repo/crypto (AES-256-GCM).
-/// One credential per (installation, kind) — replaces, doesn't append.
 model ProviderCredential {
   id                    String                    @id @default(cuid())
   installationId        String
@@ -211,7 +201,7 @@ model ProviderCredential {
 
   /// AES-256-GCM ciphertext of the API key. NEVER plaintext.
   encryptedSecret       Bytes
-  encryptionKeyVersion  Int                       @default(1)
+  encryptionKeyVersion  Int                       @default(1)  //yeh batata hai ki API key ko kaun si version ki encryption key se encrypt kiya gaya tha.
 
   // Non-secret config.
   model                 String?
@@ -219,7 +209,6 @@ model ProviderCredential {
   organizationId        String?
   metadata              Json?
 
-  // Status — populated by ProviderCredentialService.validate-before-store flow.
   active                Boolean                   @default(true)
   lastValidatedAt       DateTime?
   lastValidationError   String?
@@ -234,24 +223,18 @@ model ProviderCredential {
 enum ProviderCredentialKind {
   LLM
   EMBEDDING
-  RERANK
 }
-
-// -----------------------------------------------------------------------------
-// GitHub artifacts (Phase 1: scaffolding only — fully populated in M2/M3)
-// -----------------------------------------------------------------------------
 
 model PullRequest {
   id              String              @id @default(cuid())
   repositoryId    String
   repository      Repository          @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
   number          Int
-  githubNodeId    String              @unique
 
   title           String
-  body            String?
+  body            String?          //PR description
   state           PullRequestState
-  authorLogin     String?
+  authorLogin     String?          //developer who created the PR
   authorId        Int?
 
   createdAt       DateTime
@@ -262,12 +245,11 @@ model PullRequest {
   baseRef         String
   headRef         String
 
-  labels          String[]
+  labels          String[]            //tags on PR like bug, feature, etc.
   changedFiles    Int                 @default(0)
   additions       Int                 @default(0)
   deletions       Int                 @default(0)
-  /// Top-N filenames touched, denormalized for retrieval filters.
-  filesTouched    String[]
+  filesTouched    String[]            //path of files changed in the PR
 
   aiReviews       AiReview[]
 
@@ -287,29 +269,24 @@ enum PullRequestState {
 // Retrieval layer (Chunk + ChunkEmbedding)
 // -----------------------------------------------------------------------------
 
-/// A unit of meaning extracted from one or more GitHub artifacts.
-/// Multiple chunks share a `narrativeKey` to allow grouping at retrieval time.
 model Chunk {
   id              String            @id @default(cuid())
   repositoryId    String
   repository      Repository        @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
 
   sourceKind      ChunkSourceKind
-  /// FK back to the source row (PullRequest.id, Issue.id, ReviewComment threadRoot, etc.)
-  sourceId        String
+  /// FK back to the source row (PullRequest.id,  ReviewComment  etc.)
+  sourceId        String       
 
-  /// Shared key across all chunks of one narrative — e.g., 'pr:repo123:1847'.
-  /// Lets retrieval collapse 12 fragments back into 1 narrative unit.
+  /// Shared key across all chunks of one file in a PR — e.g., 'pr:repo123:1847'.
   narrativeKey    String
   ordinal         Int
 
-  /// The exact preprocessed text that was embedded.
+  /// The exact text that was embedded.
   content         String
-  /// SHA-256 hex of `content`. Drives idempotent re-embedding.
-  contentHash     String
   tokens          Int
 
-  // Denormalized metadata for retrieval-time filters (no joins).
+  // Denormalized metadata for retrieval-time filters 
   authorLogin     String?
   artifactCreatedAt DateTime
   artifactUpdatedAt DateTime
@@ -318,7 +295,6 @@ model Chunk {
   filesTouched    String[]
 
   // Extra metadata for CODE_FILE chunks: { functionName, startLine, endLine, language }.
-  // Stored as JSON to avoid additional columns — never use for filtering, only for display.
   metadata        Json?
 
   // FTS column populated by trigger after schema setup migration.
@@ -332,15 +308,12 @@ model Chunk {
 
   @@index([repositoryId, sourceKind, artifactCreatedAt])
   @@index([narrativeKey])
-  @@index([contentHash])
 }
 
 enum ChunkSourceKind {
   PR_HEADER
   PR_REVIEW_THREAD
   PR_DISCUSSION
-  ISSUE_HEADER
-  ISSUE_DISCUSSION
   COMMIT
   CODE_FILE
 }
@@ -353,29 +326,21 @@ model ChunkEmbedding {
   chunkId       String
   chunk         Chunk    @relation(fields: [chunkId], references: [id], onDelete: Cascade)
 
-  /// 'openai' | 'voyage' | etc. — must match a known EmbeddingProviderKind.
+  // model used to embed the chunk
   model         String
-  /// Specific model identifier — e.g., 'text-embedding-3-large'.
+  // version of the model used to embed the chunk - text-embedding-3-large_v1
   modelVersion  String
-
-  /// pgvector type — 1536 dims matches voyage-code-2 and text-embedding-3-large.
   embedding     Unsupported("vector(1536)")
 
   createdAt     DateTime @default(now())
-
   @@unique([chunkId, model, modelVersion])
 }
 
-// -----------------------------------------------------------------------------
-// Ingestion & ops
-// -----------------------------------------------------------------------------
 
 
-/// Webhook delivery audit + idempotency.
-/// `deliveryId` (X-GitHub-Delivery header) is unique → re-deliveries dedupe.
 model WebhookDelivery {
   id           String    @id @default(cuid())
-  deliveryId   String    @unique
+  deliveryId   String    @unique //send by github to our webhook endpoint
   event        String
   action       String?
   payload      Json
@@ -391,19 +356,10 @@ model WebhookDelivery {
 // AI Code Review
 // =============================================================================
 
-/// Per-installation (or per-repository) settings that control review behaviour.
-///
-/// Resolution order at review time:
-///   1. Repository-specific config (repositoryId IS NOT NULL) if it exists.
-///   2. Installation-wide default (repositoryId IS NULL).
-///
-/// NOTE: database UNIQUE does not cover the NULL case in PostgreSQL. Uniqueness
-/// of the (installationId, repositoryId=NULL) pair is enforced at the service layer.
 model ReviewConfiguration {
   id                  String           @id @default(cuid())
   installationId      String
   installation        Installation     @relation(fields: [installationId], references: [id], onDelete: Cascade)
-  /// NULL = installation-wide default; non-NULL = repository override.
   repositoryId        String?
   repository          Repository?      @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
 
@@ -412,12 +368,8 @@ model ReviewConfiguration {
   reviewMode          ReviewMode       @default(COMMENT)
   /// Glob patterns to skip — e.g. ["*.lock", "dist/**", "generated/**"].
   ignorePaths         String[]
-  /// GitHub logins to skip — e.g. ["dependabot[bot]", "renovate[bot]"].
   ignoreAuthors       String[]
-  /// Minimum severity to post an inline comment. Lower-severity findings are
-  /// included in the PR summary but not posted as line-level review comments.
   severityThreshold   AiReviewSeverity @default(WARNING)
-  /// Hard cap on files reviewed per PR. Files beyond this limit are noted in summary.
   maxFilesPerPr       Int              @default(20)
 
   createdAt           DateTime         @default(now())
@@ -435,8 +387,6 @@ enum ReviewMode {
 }
 
 /// One AI review per (repository, PR number, commit SHA).
-/// Pinned to commitSha so that pushing new commits creates a fresh review row
-/// instead of mutating the old one (GitHub reviews are immutable after submission).
 model AiReview {
   id                  String          @id @default(cuid())
   repositoryId        String
@@ -444,17 +394,13 @@ model AiReview {
   /// NULL when webhook arrives before the PR is upserted into PullRequest table.
   pullRequestId       String?
   pullRequest         PullRequest?    @relation(fields: [pullRequestId], references: [id], onDelete: SetNull)
-  /// Denormalized so we can query reviews without joining PullRequest.
   pullRequestNumber   Int
-  /// GitHub commit SHA this review is for. Drives idempotency.
   commitSha           String
 
   status              AiReviewStatus  @default(PENDING)
-  /// Top-level PR summary comment text, posted as a single GitHub review body.
   summary             String?
   /// GitHub review ID returned after posting — used to detect already-posted reviews.
   githubReviewId      BigInt?
-  /// Total inline comments posted (populated when COMPLETED).
   totalComments       Int             @default(0)
 
   startedAt           DateTime?
@@ -467,7 +413,6 @@ model AiReview {
 
   comments            AiReviewComment[]
 
-  /// One review per (repo, PR, commit) — prevents duplicate reviews on webhook re-delivery.
   @@unique([repositoryId, pullRequestNumber, commitSha])
   @@index([repositoryId, status])
   @@index([pullRequestId])
@@ -479,7 +424,6 @@ enum AiReviewStatus {
   RUNNING
   COMPLETED
   FAILED
-  /// PR was merged/closed before review completed, or matched an ignore rule.
   SKIPPED
 }
 
@@ -489,11 +433,9 @@ model AiReviewComment {
   reviewId        String
   review          AiReview         @relation(fields: [reviewId], references: [id], onDelete: Cascade)
 
-  /// Relative file path within the repository — e.g. "src/auth/service.ts".
   filePath        String
   /// Actual file line number on the new (RIGHT) side of the diff.
   line            Int
-  /// Which side of the diff the comment applies to.
   side            DiffSide         @default(RIGHT)
 
   /// Markdown body of the review comment.
@@ -502,7 +444,6 @@ model AiReviewComment {
   /// Optional fenced code block with a suggested replacement for the flagged lines.
   suggestion      String?
 
-  /// GitHub comment ID populated after the review is posted. NULL until then.
   githubCommentId BigInt?
 
   /// Set to true by a user who has reviewed and dismissed this finding.
@@ -512,24 +453,162 @@ model AiReviewComment {
 
   createdAt       DateTime         @default(now())
 
+  reviewMemory    ReviewMemory?
+  conversations   ReviewConversation[]
+
   @@index([reviewId, severity])
   @@index([reviewId, filePath])
+  @@index([githubCommentId])
 }
 
 enum AiReviewSeverity {
-  /// Nitpick / style / informational. Not posted inline unless threshold is INFO.
   INFO
-  /// Suboptimal code — notable but not blocking.
   WARNING
-  /// Bug, security issue, or significant logic error — should be addressed.
   ERROR
-  /// Critical security vulnerability or data-loss risk — must be fixed.
   CRITICAL
 }
 
 enum DiffSide {
-  /// Left side of the diff (old file).
   LEFT
-  /// Right side of the diff (new file). Default for most AI comments.
   RIGHT
+}
+
+// =============================================================================
+// Layer 2 — Review Memory
+// =============================================================================
+
+/// One row per AiReviewComment — stores the diff chunk + AI comment as a
+/// searchable memory unit so future reviews can cite past decisions.
+model ReviewMemory {
+  id                String              @id @default(cuid())
+  repositoryId      String
+  repository        Repository          @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  aiReviewCommentId String              @unique
+  aiReviewComment   AiReviewComment     @relation(fields: [aiReviewCommentId], references: [id], onDelete: Cascade)
+
+  pullRequestNumber Int
+  filePath          String
+  /// The diff patch snippet that triggered this comment .
+  diffChunk         String
+  /// The AI's comment body 
+  commentBody       String
+  severity          AiReviewSeverity
+  category          ReviewCategory      @default(CORRECTNESS)
+
+  /// Whether the developer accepted or dismissed this finding.
+  outcome           ReviewMemoryOutcome @default(PENDING)
+  outcomeAt         DateTime?
+
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+
+  embedding         ReviewMemoryEmbedding?
+
+  @@index([repositoryId, outcome])
+  @@index([repositoryId, category])
+  @@index([repositoryId, createdAt])
+}
+
+model ReviewMemoryEmbedding {
+  id             String       @id @default(cuid())
+  reviewMemoryId String       @unique
+  reviewMemory   ReviewMemory @relation(fields: [reviewMemoryId], references: [id], onDelete: Cascade)
+  model          String
+  modelVersion   String
+  embedding      Unsupported("vector(1536)")
+
+  @@map("ReviewMemoryEmbedding")
+}
+
+enum ReviewMemoryOutcome {
+  /// No developer reaction recorded yet.
+  PENDING
+  /// Developer acknowledged the issue and made a fix.
+  ACCEPTED
+  /// Developer explicitly marked this as not applicable.
+  DISMISSED
+}
+
+enum ReviewCategory {
+  SECURITY
+  PERFORMANCE
+  STYLE
+  CORRECTNESS
+  ARCHITECTURE
+  TEST_COVERAGE
+}
+
+// =============================================================================
+// Layer 2 — Repo Knowledge (extracted from developer comments)
+// =============================================================================
+
+model RepoKnowledge {
+  id               String                 @id @default(cuid())
+  repositoryId     String
+  repository       Repository             @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+
+  /// The extracted knowledge statement in plain English.
+  content          String
+  kind             KnowledgeKind
+
+  /// GitHub PR number where this knowledge was found.
+  sourcePrNumber   Int?
+  /// Full GitHub URL to the source comment.
+  sourceCommentUrl String?
+
+  createdAt        DateTime               @default(now())
+
+  embedding        RepoKnowledgeEmbedding?
+
+  @@index([repositoryId])
+  @@index([repositoryId, kind])
+}
+
+/// pgvector embedding for a RepoKnowledge row.
+model RepoKnowledgeEmbedding {
+  id              String        @id @default(cuid())
+  repoKnowledgeId String        @unique
+  repoKnowledge   RepoKnowledge @relation(fields: [repoKnowledgeId], references: [id], onDelete: Cascade)
+  model           String
+  modelVersion    String
+  embedding       Unsupported("vector(1536)")
+
+  @@map("RepoKnowledgeEmbedding")
+}
+
+enum KnowledgeKind {
+  /// High-level architectural decisions ("we use CQRS", "event-sourced domain").
+  ARCHITECTURE
+  /// Coding conventions ("all handlers validate with Zod", "use repository pattern").
+  CONVENTION
+  /// Feature-specific behaviour ("bookings use soft deletes, not hard").
+  FEATURE
+  /// Hard constraints ("never expose raw DB IDs in URLs").
+  CONSTRAINT
+  /// Domain terminology ("we call users 'members', not 'accounts'").
+  TERMINOLOGY
+}
+
+
+/// Tracks when a developer asks a question on an AI review comment
+/// and the AI reply that was generated and posted.
+model ReviewConversation {
+  id                 String          @id @default(cuid())
+  repositoryId       String
+  repository         Repository      @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  aiReviewCommentId  String
+  aiReviewComment    AiReviewComment @relation(fields: [aiReviewCommentId], references: [id], onDelete: Cascade)
+
+  developerLogin     String
+  /// GitHub ID of the developer's question comment.
+  developerCommentId BigInt
+  developerQuestion  String
+  /// The AI reply body that was posted to GitHub.
+  aiReply            String?
+  repliedAt          DateTime?
+
+  createdAt          DateTime        @default(now())
+
+  @@index([repositoryId])
+  @@index([aiReviewCommentId])
 }
