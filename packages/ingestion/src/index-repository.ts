@@ -103,7 +103,7 @@ export function createIndexRepositoryHandler(deps: IndexRepositoryDeps) {
 
     await prisma.repository.update({
       where: { id: repo.id },
-      data: { ingestionState: 'ACTIVE', ingestedThrough: new Date() },
+      data: { ingestionState: 'ACTIVE' },
     });
 
     log.info({ indexed }, 'repository fully indexed');
@@ -183,7 +183,6 @@ export async function indexSingleFile(input: IndexSingleFileInput): Promise<void
     const chunk = chunks[idx]!;
     const vector = vectors[idx]!;
 
-    const contentHash = createHash('sha256').update(chunk.content).digest('hex');
 
     const created = await prisma.chunk.create({
       data: {
@@ -193,7 +192,6 @@ export async function indexSingleFile(input: IndexSingleFileInput): Promise<void
         narrativeKey,
         ordinal: idx,
         content: chunk.content,
-        contentHash,   //future k liye inorder to prevent re-emebed the same chunk
         // Approximate token count: 1 token ≈ 4 chars for code.
         tokens: Math.ceil(chunk.content.length / 4),
         filesTouched: [filePath],

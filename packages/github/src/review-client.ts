@@ -85,11 +85,9 @@ export async function listPRFiles(
 // ---------------------------------------------------------------------------
 
 export interface ReviewLineComment {
-  /** Relative file path within the repo. */
   path: string;
   /** Actual new-file line number (not diff position). */
   line: number;
-  /** Which diff side. 'RIGHT' for new-file lines (the common case). */
   side: 'LEFT' | 'RIGHT';
   /** Markdown comment body. Max 65536 chars — longer bodies are truncated before posting. */
   body: string;
@@ -99,7 +97,6 @@ export interface CreateReviewInput {
   owner: string;
   repo: string;
   pullNumber: number;
-  /** The commit SHA to pin the review to. */
   commitId: string;
   /** PR-level summary shown in the "Files changed" view. */
   body: string;
@@ -155,9 +152,6 @@ export async function createPRReview(
   return { reviewId: data.id };
 }
 
-// ---------------------------------------------------------------------------
-// PR metadata helpers
-// ---------------------------------------------------------------------------
 
 export interface PRMetadata {
   number: number;
@@ -171,6 +165,45 @@ export interface PRMetadata {
   authorLogin: string | null;
   isDraft: boolean;
 }
+
+// ---------------------------------------------------------------------------
+// PR comment reply
+// ---------------------------------------------------------------------------
+
+/**
+ * Post a reply to an existing pull request review comment thread.
+ *
+ * GitHub treats replies differently from top-level review comments:
+ *   - `in_reply_to` links the new comment into an existing thread.
+ *   - The `path`/`line`/`side` from the parent are inherited automatically.
+ *   - Returns the GitHub comment ID of the newly created reply.
+ */
+export async function replyToPRComment(
+  github: GitHubAppClient,
+  githubInstallationId: number,
+  opts: {
+    owner: string;
+    repo: string;
+    pullNumber: number;
+    /** ID of the comment we are replying to. */
+    inReplyToCommentId: number;
+    body: string;
+  },
+): Promise<{ commentId: number }> {
+  const octokit = github.forInstallation(githubInstallationId);
+  const { data } = await octokit.rest.pulls.createReplyForReviewComment({
+    owner: opts.owner,
+    repo: opts.repo,
+    pull_number: opts.pullNumber,
+    comment_id: opts.inReplyToCommentId,
+    body: opts.body,
+  });
+  return { commentId: data.id };
+}
+
+// ---------------------------------------------------------------------------
+// PR metadata helpers
+// ---------------------------------------------------------------------------
 
 /** Fetch lightweight PR metadata — used by the review orchestrator to check if
  *  a PR is still open and to get the author login for ignore-list filtering. */

@@ -22,6 +22,12 @@ import {
   buildFileReviewPrompt,
   PR_SUMMARY_SYSTEM,
   buildPrSummaryPrompt,
+  EXPLAIN_COMMENT_SYSTEM,
+  buildExplainCommentPrompt,
+  CLASSIFY_DEV_COMMENT_SYSTEM,
+  buildClassifyDevCommentPrompt,
+  EXTRACT_KNOWLEDGE_SYSTEM,
+  buildExtractKnowledgePrompt,
 } from './prompts';
 
 /** Strips ```json ... ``` or ``` ... ``` fences if the model wraps its output. */
@@ -29,6 +35,20 @@ function extractJson(raw: string): string {
   const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/);
   if (fenced?.[1]) return fenced[1].trim();
   return raw.trim();
+}
+
+export type DevCommentIntent = 'QUESTION' | 'CODEBASE_KNOWLEDGE' | 'ACCEPTED' | 'DISMISSED' | 'UNRELATED';
+
+export interface DevCommentClassification {
+  intent: DevCommentIntent;
+  confidence: number;
+  reasoning: string;
+}
+
+export interface ExtractedKnowledge {
+  content: string;
+  kind: string;
+  isUseful: boolean;
 }
 
 export interface ReviewLLMClient {
@@ -44,6 +64,8 @@ export interface ReviewLLMClient {
       endLine: number;
       content: string;
     }>;
+    pastReviewsContext?: string;
+    repoKnowledgeContext?: string;
   }): Promise<FileReviewOutput>;
 
   summarizePr(opts: {
@@ -51,6 +73,27 @@ export interface ReviewLLMClient {
     fileSummaries: Array<{ path: string; summary: string; commentCount: number }>;
     totalComments: number;
   }): Promise<PrSummaryOutput>;
+
+  /** Classify the intent of a developer's comment on an AI review finding. */
+  classifyDevComment(opts: {
+    aiComment: string;
+    developerComment: string;
+  }): Promise<DevCommentClassification>;
+
+  /** Generate a clear explanation of a review finding in response to a developer question. */
+  explainComment(opts: {
+    filePath: string;
+    line: number;
+    diffChunk: string;
+    originalComment: string;
+    developerQuestion: string;
+  }): Promise<string>;
+
+  /** Extract reusable codebase knowledge from a developer comment. */
+  extractKnowledge(opts: {
+    developerComment: string;
+    filePath?: string;
+  }): Promise<ExtractedKnowledge>;
 }
 
 export function createReviewLLMClient(provider: LLMProvider, logger: Logger): ReviewLLMClient {
@@ -124,6 +167,68 @@ export function createReviewLLMClient(provider: LLMProvider, logger: Logger): Re
 
       log.warn({ raw: raw.slice(0, 200) }, 'PR summary schema validation failed — using fallback');
       return { summary: `Review completed for "${opts.prTitle}". Found ${opts.totalComments} comment${opts.totalComments !== 1 ? 's' : ''}.` };
+    },
+
+    async classifyDevComment(opts) {
+      const userPrompt = buildClassifyDevCommentPrompt(opts);
+      try {
+        const result = await provider.chat({
+          messages: [
+            { role: 'system', content: CLASSIFY_DEV_COMMENT_SYSTEM },
+            { role: 'user', content: userPrompt },
+          ],
+          temperature: 0.0,
+          maxTokens: 256,
+        });
+        const parsed = JSON.parse(extractJson(result.content)) as {
+          intent: DevCommentIntent;
+          confidence: number;
+          reasoning: string;
+        };
+        if (!parsed.intent) throw new Error('missing intent field');
+        return parsed;
+      } catch (err) {
+        log.warn({ err }, 'classifyDevComment failed — defaulting to UNRELATED');
+        return { intent: 'UNRELATED', confidence: 0, reasoning: 'classification failed' };
+      }
+    },
+
+    async explainComment(opts) {
+      const userPrompt = buildExplainCommentPrompt(opts);
+      try {
+        const result = await provider.chat({
+          messages: [
+            { role: 'system', content: EXPLAIN_COMMENT_SYSTEM },
+            { role: 'user', content: userPrompt },
+          ],
+          temperature: 0.2,
+          maxTokens: 1024,
+        });
+        return result.content.trim();
+      } catch (err) {
+        log.warn({ err }, 'explainComment LLM call failed');
+        return opts.originalComment;
+      }
+    },
+
+    async extractKnowledge(opts) {
+      const userPrompt = buildExtractKnowledgePrompt(opts);
+      try {
+        const result = await provider.chat({
+          messages: [
+            { role: 'system', content: EXTRACT_KNOWLEDGE_SYSTEM },
+            { role: 'user', content: userPrompt },
+          ],
+          temperature: 0.0,
+          maxTokens: 256,
+        });
+        const parsed = JSON.parse(extractJson(result.content)) as ExtractedKnowledge;
+        if (!parsed.content || !parsed.kind) throw new Error('missing fields');
+        return parsed;
+      } catch (err) {
+        log.warn({ err }, 'extractKnowledge LLM call failed');
+        return { content: '', kind: 'CONVENTION', isUseful: false };
+      }
     },
   };
 }

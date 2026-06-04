@@ -445,12 +445,6 @@ model AiReviewComment {
   suggestion      String?
 
   githubCommentId BigInt?
-
-  /// Set to true by a user who has reviewed and dismissed this finding.
-  dismissed       Boolean          @default(false)
-  dismissedById   String?
-  dismissedAt     DateTime?
-
   createdAt       DateTime         @default(now())
 
   reviewMemory    ReviewMemory?

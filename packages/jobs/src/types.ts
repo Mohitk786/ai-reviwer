@@ -10,6 +10,12 @@ export const JobNames = {
   IndexRepository: 'index.repository',
   IndexFile: 'index.file',
 
+  // Layer 2 — Review memory
+  StoreReviewMemory: 'review.memory.store',
+
+  // Layer 2 — Developer comment processing
+  ProcessDeveloperComment: 'comment.developer.process',
+
   // Infrastructure
   WebhookProcess: 'webhook.process',
 } as const;
@@ -47,6 +53,29 @@ export const jobSchemas = {
 
   [JobNames.WebhookProcess]: z.object({
     deliveryId: z.string(),
+  }),
+
+  [JobNames.StoreReviewMemory]: z.object({
+    repositoryId: z.string(),
+    aiReviewId: z.string(),
+  }),
+
+  [JobNames.ProcessDeveloperComment]: z.object({
+    repositoryId: z.string(),
+    installationId: z.string(),
+    pullRequestNumber: z.number().int().positive(),
+    /** GitHub numeric ID of the developer's comment. */
+    githubCommentId: z.number().int(),
+    commentBody: z.string(),
+    commenterLogin: z.string(),
+    /** Present for inline diff comments — identifies which file the comment is on. */
+    filePath: z.string().optional(),
+    /** Line number for inline diff comments. */
+    line: z.number().int().optional(),
+    /** GitHub comment ID this is a reply to — used to match our AiReviewComment. */
+    inReplyToCommentId: z.number().int().optional(),
+    /** GitHub URL of the comment — stored in RepoKnowledge for attribution. */
+    commentUrl: z.string().optional(),
   }),
 } as const satisfies Record<JobName, z.ZodTypeAny>;
 

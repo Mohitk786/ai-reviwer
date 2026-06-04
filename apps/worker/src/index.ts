@@ -16,8 +16,9 @@ import {
   createProcessWebhookHandler,
   createIndexRepositoryHandler,
   createIndexFileHandler,
+  createProcessDevCommentHandler,
 } from '@repo/ingestion';
-import { createReviewPrHandler } from '@repo/review';
+import { createReviewPrHandler, createStoreReviewMemoryHandler } from '@repo/review';
 
 const log = getLogger('worker');
 
@@ -51,7 +52,9 @@ async function main(): Promise<void> {
   const processWebhook = createProcessWebhookHandler({ prisma, boss, logger: log });
   const indexRepository = createIndexRepositoryHandler({ prisma, github, embedding, logger: log });
   const indexFile = createIndexFileHandler({ prisma, github, embedding, logger: log });
-  const reviewPr = createReviewPrHandler({ prisma, github, logger: log, llm, embedding });
+  const reviewPr = createReviewPrHandler({ prisma, github, logger: log, llm, embedding, boss });
+  const storeReviewMemory = createStoreReviewMemoryHandler({ prisma, embedding, logger: log });
+  const processDevComment = createProcessDevCommentHandler({ prisma, github, llm, embedding, logger: log });
 
   await registerHandlers([
     defineHandler(JobNames.Hello, { batchSize: 8 }, async ({ id, data }) => {
@@ -72,6 +75,14 @@ async function main(): Promise<void> {
 
     defineHandler(JobNames.ReviewPr, { batchSize: 4 }, async (job) => {
       await reviewPr(job);
+    }),
+
+    defineHandler(JobNames.StoreReviewMemory, { batchSize: 8 }, async (job) => {
+      await storeReviewMemory(job);
+    }),
+
+    defineHandler(JobNames.ProcessDeveloperComment, { batchSize: 8 }, async (job) => {
+      await processDevComment(job);
     }),
   ]);
   log.info('handlers registered');

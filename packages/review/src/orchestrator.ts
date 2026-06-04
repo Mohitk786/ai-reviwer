@@ -7,10 +7,13 @@ import type { EmbeddingProvider } from '@repo/embeddings';
 import { parsePatch, isCommentableLine } from '@repo/diff-parser';
 import { jobSchemas, JobNames } from '@repo/jobs';
 import { minimatch } from 'minimatch';
+import type Boss from 'pg-boss';
 
 import { createReviewLLMClient } from './llm-client.js';
 import type { FileReviewComment } from './schemas.js';
 import { searchSimilarCode } from './code-search.js';
+import { searchSimilarReviews, searchRepoKnowledge } from './memory-search.js';
+import { buildPastReviewsContext, buildRepoKnowledgeContext } from './prompts.js';
 import { z } from 'zod';
 
 export interface ReviewPrDeps {
@@ -18,12 +21,13 @@ export interface ReviewPrDeps {
   github: GitHubAppClient;
   logger: Logger;
   llm: LLMProvider;
+  boss: Boss;
   /** Optional — when provided, similar codebase chunks are retrieved and injected into the review prompt. */
   embedding?: EmbeddingProvider;
 }
 
 export function createReviewPrHandler(deps: ReviewPrDeps) {
-  const { prisma, github, logger, llm, embedding } = deps;
+  const { prisma, github, logger, llm, embedding, boss } = deps;
 
   return async function handleReviewPr(job: { data: z.infer<typeof jobSchemas[typeof JobNames.ReviewPr]> }): Promise<void> {
     const payload = job.data;
@@ -56,7 +60,7 @@ export function createReviewPrHandler(deps: ReviewPrDeps) {
     });
 
     try {
-      await runReview({ payload, log, prisma, github, llm, embedding });
+      await runReview({ payload, log, prisma, github, llm, embedding, boss });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       log.error({ err }, 'review failed — marking FAILED');
@@ -79,8 +83,9 @@ async function runReview(ctx: {
   github: GitHubAppClient;
   llm: LLMProvider;
   embedding?: EmbeddingProvider;
+  boss: Boss;
 }): Promise<void> {
-  const { payload, log, prisma, github, llm, embedding } = ctx;
+  const { payload, log, prisma, github, llm, embedding, boss } = ctx;
 
   // ---- 3. Load repo + installation + config ----
   const repo = await prisma.repository.findUniqueOrThrow({
@@ -168,21 +173,46 @@ async function runReview(ctx: {
       continue;
     }
 
+    const queryText = patch.slice(0, 3000);
+
     // Layer 1: retrieve similar existing functions from the indexed codebase.
-    // Run only when embedding is available and the repo has been indexed.
     let similarCode: Awaited<ReturnType<typeof searchSimilarCode>> = [];
+    // Layer 2: retrieve past review decisions + repo knowledge (run in parallel with Layer 1).
+    let pastReviewsContext = '';
+    let repoKnowledgeContext = '';
+
     if (embedding) {
+      const vector = await embedding.embed(queryText);
+      const vectorStr = `[${vector.join(',')}]`;
       try {
-        similarCode = await searchSimilarCode(prisma, embedding, {
-          repositoryId: payload.repositoryId,
-          queryText: patch.slice(0, 3000),
-          topK: 5,
-        });
-        if (similarCode.length > 0) {
-          log.debug({ filePath: file.filename, hits: similarCode.length }, 'similar code retrieved');
-        }
+        const [layer1, layer2Reviews, layer2Knowledge] = await Promise.all([
+          searchSimilarCode(prisma, {
+            repositoryId: payload.repositoryId,
+            vectorStr,
+            topK: 5,
+          }),
+          searchSimilarReviews(prisma, {
+            repositoryId: payload.repositoryId,
+            vectorStr,
+            topK: 3,
+          }),
+          searchRepoKnowledge(prisma, {
+            repositoryId: payload.repositoryId,
+            vectorStr,
+            topK: 3,
+          }),
+        ]);
+
+        similarCode = layer1;
+        pastReviewsContext = buildPastReviewsContext(layer2Reviews);
+        repoKnowledgeContext = buildRepoKnowledgeContext(layer2Knowledge);
+
+        log.debug(
+          { filePath: file.filename, codeHits: layer1.length, reviewHits: layer2Reviews.length, knowledgeHits: layer2Knowledge.length },
+          'context retrieved',
+        );
       } catch (err) {
-        log.warn({ err, filePath: file.filename }, 'code search failed — continuing without context');
+        log.warn({ err, filePath: file.filename }, 'context retrieval failed — continuing without Layer 2');
       }
     }
 
@@ -199,6 +229,8 @@ async function runReview(ctx: {
         endLine: r.metadata?.endLine ?? 1,
         content: r.content,
       })),
+      pastReviewsContext,
+      repoKnowledgeContext,
     });
 
     // Validate that each comment references a line that actually exists in the diff.
@@ -281,6 +313,17 @@ async function runReview(ctx: {
       completedAt: new Date(),
     },
   });
+
+  // ---- 12. Enqueue Layer 2 memory storage (best-effort, non-blocking) ----
+  // Runs in a separate job so it never delays the review completion response.
+  if (collectedComments.length > 0) {
+    await boss.send(JobNames.StoreReviewMemory, {
+      repositoryId: payload.repositoryId,
+      aiReviewId: payload.aiReviewId,
+    }).catch((err: unknown) => {
+      log.warn({ err }, 'failed to enqueue StoreReviewMemory — memory will not be stored for this review');
+    });
+  }
 
   log.info(
     { githubReviewId, totalComments: collectedComments.length },

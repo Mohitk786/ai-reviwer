@@ -1,13 +1,4 @@
-/**
- * Similarity search over indexed codebase chunks (Layer 1).
- *
- * Queries ChunkEmbedding using pgvector cosine distance to find existing
- * functions/classes that are semantically similar to the code being reviewed.
- * Always filtered by repositoryId — never mixes context across repos.
- */
-
 import type { PrismaClient } from '@repo/db';
-import type { EmbeddingProvider } from '@repo/embeddings';
 
 export interface SimilarChunkMetadata {
   functionName: string | null;
@@ -20,7 +11,6 @@ export interface SimilarCodeResult {
   filePath: string;
   content: string;
   metadata: SimilarChunkMetadata;
-  /** Cosine distance [0, 2] — lower is more similar. */
   distance: number;
 }
 
@@ -30,18 +20,16 @@ export interface SimilarCodeResult {
  */
 export async function searchSimilarCode(
   prisma: PrismaClient,
-  embedding: EmbeddingProvider,
   opts: {
     repositoryId: string;
-    queryText: string;
+    vectorStr: string;
     topK: number;
   },
 ): Promise<SimilarCodeResult[]> {
-  const vector = await embedding.embed(opts.queryText);
-  const vectorStr = `[${vector.join(',')}]`;
+  const { repositoryId, vectorStr, topK } = opts;
 
   // Raw SQL is required because ChunkEmbedding.embedding is an Unsupported pgvector type.
-  // <=> is cosine distance (0 = identical, 2 = opposite). HNSW index kicks in here.
+  // <=> is cosine distance (0 = identical, 2 = opposite). 
   const rows = await prisma.$queryRaw<
     Array<{
       filePath: string;
@@ -57,10 +45,10 @@ export async function searchSimilarCode(
       ce.embedding <=> ${vectorStr}::vector AS distance
     FROM "Chunk" c
     JOIN "ChunkEmbedding" ce ON ce."chunkId" = c.id
-    WHERE c."repositoryId" = ${opts.repositoryId}
+    WHERE c."repositoryId" = ${repositoryId}
       AND c."sourceKind" = 'CODE_FILE'
     ORDER BY distance ASC
-    LIMIT ${opts.topK}
+    LIMIT ${topK}
   `;
 
   return rows.map((r) => ({
